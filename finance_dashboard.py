@@ -3,6 +3,7 @@ import json
 import datetime as dt
 from datetime import date
 import pandas as pd
+import numpy as np
 import streamlit as st
 
 st.set_page_config(page_title="ASR Finance Dashboard", layout="wide")
@@ -13,8 +14,9 @@ with st.expander("How to use (read this first)", expanded=False):
 1) **Upload your CSV** — same format as you shared (Date, Category, Amount, Note, type, Payment mode, To payment mode, Tags).
 2) Choose a **Reference month** (any date in that month). We compute each card's **billing cycle that ends in that month**.
 3) See **Credit Card Dues**, **Regular Expenses**, and the **Cash Flow Simulator**.
-4) NEW: See **Expenses by Card** — full transaction tables per card for the computed cycles + category breakdowns and CSV downloads.
-5) NEW: **Monthly Trends (by Card)** — line charts and a table of monthly totals (6/12 months), with CSV export.
+4) **Expenses by Card** — full transaction tables per card for the computed cycles + category breakdowns and CSV downloads.
+5) **Monthly Trends (by Card)** — monthly totals + MoM % change, anomaly highlights (>1.5× median), and **Budget Caps** (sidebar).
+6) **Top Merchants per Card** — grouped by Category + Note; choose analysis window (cycle / 3 / 6 / 12 months).
 """)
 
 # ---------------------------
@@ -81,6 +83,14 @@ def cycle_window_for_month(card: str, year: int, month: int):
         due_month -= 12
         due_year += 1
     return cycle_start, cycle_end, dt.date(bill_year, bill_month, due_day), dt.date(due_year, due_month, due_day)
+
+# ---------------------------
+# Sidebar: Budget Caps
+# ---------------------------
+st.sidebar.header("⚙️ Budget Caps (per card)")
+budget_caps = {}
+for card in BILL_CYCLES.keys():
+    budget_caps[card] = st.sidebar.number_input(f"{card} cap (₹)", min_value=0, value=0, step=1000, help="0 means no cap check")
 
 # ---------------------------
 # Inputs
@@ -198,9 +208,9 @@ if uploaded is not None:
                 st.info("No transactions for this cycle.")
             else:
                 if "Category" in sub.columns:
-                    cat = sub.groupby("Category", dropna=False)["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
-                    st.markdown("**Category Breakdown**")
-                    st.dataframe(cat, use_container_width=True)
+                    cat = sub.groupby(["Category","Note"], dropna=False)["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
+                    st.markdown("**Top Merchants (Category + Note)** — cycle window")
+                    st.dataframe(cat.head(10), use_container_width=True)
                 st.markdown("**Transactions**")
                 st.dataframe(sub, use_container_width=True)
                 csv_buf = io.StringIO()
@@ -208,22 +218,58 @@ if uploaded is not None:
                 st.download_button(f"Download {card} Cycle CSV", data=csv_buf.getvalue(),
                                    file_name=f"{card}_cycle_{cstart}_to_{cend}.csv", mime="text/csv")
 
-    # -------- NEW: Monthly Trends (by Card) --------
+    # -------- Top Merchants per Card (selectable window) --------
+    st.markdown("---")
+    st.header("🏷️ Top Merchants per Card — choose analysis window")
+    window_choice = st.radio("Window", ["Cycle window", "Last 3 months", "Last 6 months", "Last 12 months"], horizontal=True, index=1)
+
+    def months_back(n, ref_date):
+        y, m = ref_date.year, ref_date.month
+        end = dt.date(y, m, month_range(y, m)[1].day)
+        # n months back inclusive
+        start_period = (pd.Period(f"{y}-{m}", freq="M") - n + 1)
+        start = dt.date(start_period.year, start_period.month, 1)
+        return start, end
+
+    if window_choice == "Cycle window":
+        global_start = None
+        global_end = None
+    else:
+        nmap = {"Last 3 months": 3, "Last 6 months": 6, "Last 12 months": 12}
+        n = nmap[window_choice]
+        global_start, global_end = months_back(n, today)
+
+    for card in BILL_CYCLES.keys():
+        if window_choice == "Cycle window":
+            cstart, cend, _, _ = per_card_transactions[card]["window"]
+            mask = (df["Card"] == card) & (df["Date"].dt.date >= cstart) & (df["Date"].dt.date <= cend)
+            window_label = f"{cstart} → {cend}"
+        else:
+            mask = (df["Card"] == card) & (df["Date"].dt.date >= global_start) & (df["Date"].dt.date <= global_end)
+            window_label = f"{global_start} → {global_end}"
+
+        sub = df.loc[mask, ["Date","Category","Note","Amount"]].copy().sort_values("Amount", ascending=False)
+        with st.expander(f"{card} — Top Merchants | Window: {window_label}"):
+            if sub.empty:
+                st.info("No transactions in this window.")
+            else:
+                top = sub.groupby(["Category","Note"], dropna=False)["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
+                st.dataframe(top.head(10), use_container_width=True)
+                buf = io.StringIO()
+                top.to_csv(buf, index=False)
+                st.download_button(f"Download Top Merchants — {card}", data=buf.getvalue(),
+                                   file_name=f"top_merchants_{card}.csv", mime="text/csv")
+
+    # -------- Monthly Trends (by Card) with MoM %, Anomaly, Budget Caps --------
     st.markdown("---")
     st.header("📈 Monthly Trends (by Card)")
-    st.caption("Rolling monthly totals per card; pick 6 or 12 months. Toggle credits to include refunds/waivers as negative or ignore them.")
+    st.caption("Rolling monthly totals; anomaly highlight (>1.5× median). Budget caps from sidebar.")
 
-    # Build monthly series across the whole dataset
     trends_df = df.copy()
     trends_df["YYYY-MM"] = trends_df["Date"].dt.to_period("M").astype(str)
-
-    # Decide whether to include credits (negative) or ignore (use only positive spends)
     include_credits = st.checkbox("Include credits/refunds as negative in monthly totals", value=True)
     if not include_credits:
-        # Keep only positive outflows
         trends_df = trends_df[trends_df["Amount"] > 0]
-
-    # Keep only rows mapped to a known card
     trends_df = trends_df[trends_df["Card"].notna()]
 
     monthly = (
@@ -235,30 +281,55 @@ if uploaded is not None:
         .sort_index()
     )
 
-    # Limit to last N months
     window = st.radio("Window", ["Last 6 months", "Last 12 months"], horizontal=True, index=0)
     n_months = 6 if window == "Last 6 months" else 12
     if monthly.shape[0] > n_months:
         monthly = monthly.iloc[-n_months:, :]
 
-    # Card selector
     available_cards = [c for c in BILL_CYCLES.keys() if c in monthly.columns]
     selected_cards = st.multiselect("Choose cards to plot", options=available_cards, default=available_cards)
 
+    def style_anomalies_and_caps(df_in: pd.DataFrame):
+        df = df_in.copy()
+        med = df.median(axis=0)
+        styled = df.style
+
+        def color_cells(val, col):
+            cap = budget_caps.get(col, 0) or 0
+            is_anom = val > 1.5 * med[col]
+            is_over_cap = cap > 0 and val > cap
+            if is_over_cap or is_anom:
+                return "background-color: #ffcccc; font-weight: 600"  # light red
+            return ""
+
+        styled = styled.apply(
+            lambda col: [color_cells(v, col.name) for v in col], axis=0
+        ).format("{:,.0f}")
+        return styled
+
     if selected_cards:
         st.subheader("Trend Chart")
-        st.line_chart(monthly[selected_cards])  # Streamlit's native line chart (Altair under the hood)
+        st.line_chart(monthly[selected_cards])
 
-        st.subheader("Monthly Totals Table")
-        show_table = monthly[selected_cards].copy()
-        # Pretty format not needed here; CSV export preferred
-        st.dataframe(show_table, use_container_width=True)
+        st.subheader("Monthly Totals (₹) — anomalies & over-cap highlighted")
+        st.dataframe(style_anomalies_and_caps(monthly[selected_cards]), use_container_width=True)
 
-        # Export CSV
-        buf = io.StringIO()
-        show_table.to_csv(buf)
-        st.download_button("Download Monthly Trends CSV", data=buf.getvalue(),
-                           file_name=f"monthly_trends_{n_months}m.csv", mime="text/csv")
+        # MoM % change table
+        mom = monthly[selected_cards].pct_change().replace([np.inf, -np.inf], np.nan) * 100.0
+        mom = mom.round(1)
+        st.subheader("MoM % Change")
+        st.dataframe(mom, use_container_width=True)
+
+        # Export
+        buf_tot = io.StringIO()
+        monthly[selected_cards].to_csv(buf_tot)
+        st.download_button("Download Monthly Totals CSV", data=buf_tot.getvalue(),
+                           file_name=f"monthly_totals_{n_months}m.csv", mime="text/csv")
+
+        buf_mom = io.StringIO()
+        mom.to_csv(buf_mom)
+        st.download_button("Download MoM % CSV", data=buf_mom.getvalue(),
+                           file_name=f"monthly_mom_{n_months}m.csv", mime="text/csv")
     else:
         st.info("Select at least one card to plot monthly trends.")
 
