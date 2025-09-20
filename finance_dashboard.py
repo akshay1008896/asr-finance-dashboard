@@ -14,6 +14,7 @@ with st.expander("How to use (read this first)", expanded=False):
 2) Choose a **Reference month** (any date in that month). We compute each card's **billing cycle that ends in that month**.
 3) See **Credit Card Dues**, **Regular Expenses**, and the **Cash Flow Simulator**.
 4) NEW: See **Expenses by Card** — full transaction tables per card for the computed cycles + category breakdowns and CSV downloads.
+5) NEW: **Monthly Trends (by Card)** — line charts and a table of monthly totals (6/12 months), with CSV export.
 """)
 
 # ---------------------------
@@ -29,6 +30,7 @@ CARD_RULES = {
 }
 
 BILL_CYCLES = {
+    # (cycle_start_day, cycle_end_day, due_day, due_offset_months)
     "Amex": (22, 21, 12, 1),
     "HSBC": (19, 18, 5, 1),
     "HSBC Cash": (8, 7, 22, 0),
@@ -65,6 +67,7 @@ def month_range(y, m):
     return start, end
 
 def cycle_window_for_month(card: str, year: int, month: int):
+    """Return (cycle_start_date, cycle_end_date, bill_generation_date, due_date) for the cycle that ENDS in `year-month`."""
     start_day, end_day, due_day, due_offset = BILL_CYCLES[card]
     if month == 1:
         cycle_start = dt.date(year-1, 12, start_day)
@@ -99,13 +102,19 @@ if "paid_flags" not in st.session_state:
 # ---------------------------
 if uploaded is not None:
     df = pd.read_csv(uploaded)
-    if "Date" not in df.columns or "Amount" not in df.columns or "Payment mode" not in df.columns:
-        st.error("CSV must include columns: Date, Amount, Payment mode (and ideally Category, Note).")
+
+    # Basic validation
+    required_cols = {"Date", "Amount", "Payment mode"}
+    missing = required_cols.difference(df.columns)
+    if missing:
+        st.error(f"CSV missing required columns: {missing}")
         st.stop()
+
+    # Clean
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Card"] = df["Payment mode"].apply(detect_card)
 
-    # Per-card cycle totals
+    # -------- Per-card cycle totals for chosen month --------
     y, m = today.year, today.month
     rows = []
     per_card_transactions = {}
@@ -131,7 +140,7 @@ if uploaded is not None:
     st.subheader("Credit Card Dues (cycle that ends this month → due next month)")
     st.dataframe(card_due_df, use_container_width=True)
 
-    # Regular Expenses
+    # -------- Regular Expenses with Paid toggles --------
     start_m, end_m = month_range(y, m)
     regs = []
     for r in REGULARS:
@@ -154,7 +163,7 @@ if uploaded is not None:
             st.session_state.paid_flags[row["Key"]] = paid
     regs_df["Paid"] = regs_df["Key"].map(lambda k: st.session_state.paid_flags.get(k, False))
 
-    # Cash Flow Simulator
+    # -------- Cash Flow Simulator --------
     st.subheader("Cash Flow Simulator (by date)")
     balance = starting_balance + extra_buffer
     events = []
@@ -171,12 +180,14 @@ if uploaded is not None:
     sim_df = pd.DataFrame(rows2, columns=["Date","Event","Amount (₹)","Balance After (₹)"])
     st.dataframe(sim_df, use_container_width=True)
 
-    # Expenses by Card
+    # -------- Expenses by Card (detailed) --------
     st.markdown("---")
     st.header("🧾 Expenses by Card (for this cycle)")
     st.caption("These are the transactions included in each card's cycle window above.")
-
-    st.dataframe(card_due_df[["Card","Transactions","Amount (₹)","Cycle Start","Cycle End","Bill Generation","Due Date"]], use_container_width=True)
+    st.dataframe(
+        card_due_df[["Card","Transactions","Amount (₹)","Cycle Start","Cycle End","Bill Generation","Due Date"]],
+        use_container_width=True
+    )
 
     for card in BILL_CYCLES.keys():
         detail = per_card_transactions[card]
@@ -194,4 +205,62 @@ if uploaded is not None:
                 st.dataframe(sub, use_container_width=True)
                 csv_buf = io.StringIO()
                 sub.to_csv(csv_buf, index=False)
-                st.download_button(f"Download {card} Cycle CSV", data=csv_buf.getvalue(), file_name=f"{card}_cycle_{cstart}_to_{cend}.csv", mime="text/csv")
+                st.download_button(f"Download {card} Cycle CSV", data=csv_buf.getvalue(),
+                                   file_name=f"{card}_cycle_{cstart}_to_{cend}.csv", mime="text/csv")
+
+    # -------- NEW: Monthly Trends (by Card) --------
+    st.markdown("---")
+    st.header("📈 Monthly Trends (by Card)")
+    st.caption("Rolling monthly totals per card; pick 6 or 12 months. Toggle credits to include refunds/waivers as negative or ignore them.")
+
+    # Build monthly series across the whole dataset
+    trends_df = df.copy()
+    trends_df["YYYY-MM"] = trends_df["Date"].dt.to_period("M").astype(str)
+
+    # Decide whether to include credits (negative) or ignore (use only positive spends)
+    include_credits = st.checkbox("Include credits/refunds as negative in monthly totals", value=True)
+    if not include_credits:
+        # Keep only positive outflows
+        trends_df = trends_df[trends_df["Amount"] > 0]
+
+    # Keep only rows mapped to a known card
+    trends_df = trends_df[trends_df["Card"].notna()]
+
+    monthly = (
+        trends_df.groupby(["YYYY-MM", "Card"])["Amount"]
+        .sum()
+        .reset_index()
+        .pivot(index="YYYY-MM", columns="Card", values="Amount")
+        .fillna(0.0)
+        .sort_index()
+    )
+
+    # Limit to last N months
+    window = st.radio("Window", ["Last 6 months", "Last 12 months"], horizontal=True, index=0)
+    n_months = 6 if window == "Last 6 months" else 12
+    if monthly.shape[0] > n_months:
+        monthly = monthly.iloc[-n_months:, :]
+
+    # Card selector
+    available_cards = [c for c in BILL_CYCLES.keys() if c in monthly.columns]
+    selected_cards = st.multiselect("Choose cards to plot", options=available_cards, default=available_cards)
+
+    if selected_cards:
+        st.subheader("Trend Chart")
+        st.line_chart(monthly[selected_cards])  # Streamlit's native line chart (Altair under the hood)
+
+        st.subheader("Monthly Totals Table")
+        show_table = monthly[selected_cards].copy()
+        # Pretty format not needed here; CSV export preferred
+        st.dataframe(show_table, use_container_width=True)
+
+        # Export CSV
+        buf = io.StringIO()
+        show_table.to_csv(buf)
+        st.download_button("Download Monthly Trends CSV", data=buf.getvalue(),
+                           file_name=f"monthly_trends_{n_months}m.csv", mime="text/csv")
+    else:
+        st.info("Select at least one card to plot monthly trends.")
+
+else:
+    st.info("Upload your transactions CSV to begin.")
