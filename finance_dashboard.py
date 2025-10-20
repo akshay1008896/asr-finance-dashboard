@@ -505,27 +505,55 @@ if uploaded is not None:
     else:
         st.info("Select at least one card to analyze monthly trends.")
 
-    # -------- Debt Reduction Suggestions --------
+    # -------- Debt Reduction Suggestions & Investment Strategy (Dynamic) --------
     st.markdown("---")
-    st.header("💡 Debt Reduction & Account Management Suggestions")
+    st.header("🎯 1-Year Financial Action Plan: Debt & Investment")
     
-    # FIX APPLIED HERE: Using .apply(lambda x: x.month) instead of .dt.month to avoid AttributeError
-    due_bills = card_due_df[card_due_df["Cycle End (Bill Gen)"].apply(lambda x: x.month) == m].sort_values("Current Liability (₹)", ascending=False)
+    # Dynamic Debt Calculation
+    unsecured_debt = debt_df[debt_df["item"] != "Home Loan EMI"].sort_values("tenure_left")
     
-    if not due_bills.empty:
+    debt_p1 = unsecured_debt.iloc[0] if not unsecured_debt.empty else None
+    
+    if debt_p1 is not None and isinstance(debt_p1["tenure_left"], (int, float)):
+        # Calculate the potential cash flow increase using the Snowball method (clearing shortest tenure first)
+        p1_emi = debt_p1["amount"]
+        p1_tenure = debt_p1["tenure_left"]
+        
+        cash_flow_increase = p1_emi
+        
+        st.subheader("1. Debt Clearance Strategy (Snowball for Cash Flow)")
         st.markdown(f"""
-        1. **High-Priority Payment Focus:** Your bills generated this month, totaling **₹{total_next_due:,.2f}**, plus your monthly EMIs (**₹{total_emi:,.2f}**), are the priority. All are due in **{ (date.today() + relativedelta(months=1)).strftime('%B') }**.
-        2. **Top Liability:** The largest single bill is **{due_bills.iloc[0]['Card']}** with **₹{due_bills.iloc[0]['Current Liability (₹)']:,.2f}**.
-        3. **Cash Flow Tight Window:** The **Cash Flow Simulator** shows a projected cash balance after all monthly payments. If this dips low, prioritize paying **Movers & Packers** first, as it has the shortest tenure left (**2 months**).
+        Your primary goal for the next 12 months should be to **maximize free monthly cash flow** to improve your Debt-to-Income (DTI) ratio for the new ₹1.6 Cr home loan.
+
+        * **Phase 1: Attack the Shortest Debt.** Your smallest or shortest-tenure loan is **{debt_p1['item']}** (₹{debt_p1['outstanding']:,.0f} outstanding).
+        * **Action:** Continue paying the EMI of **₹{p1_emi:,.0f}** for **{p1_tenure} more months**.
+        * **Result:** Once cleared, you must immediately roll the entire **₹{cash_flow_increase:,.0f}** into the next debt (**{unsecured_debt.iloc[1]['item']}**). This "snowball" effect will accelerate all subsequent payments, drastically reducing your unsecured debt before the home loan application.
+        
+        **Total Current Monthly SIPs:** ₹{sum(r['amount'] for r in REGULARS if 'SIP' in r['item'])}
         """)
+        
+        st.subheader("2. Investment Strategy for 1-Year Goal (Safety First)")
+        st.markdown(f"""
+        With a short **1-year horizon** for your ₹40 Lakh down payment and additional closing costs, **capital preservation** is paramount. Traditional equity SIPs (stocks, high-risk mutual funds) are too volatile and should **not** be used for your down payment fund.
+
+        | Fund Purpose | Risk Profile | Recommended Indian Instrument | Why This Choice? |
+        | :--- | :--- | :--- | :--- |
+        | **Down Payment Fund (₹40 Lakh)** | **LOW** | **Liquid Funds / Ultra Short Duration Debt Funds** | Offers better post-tax returns than a bank account while maintaining high liquidity and very low volatility. Your capital is safe. |
+        | **New Monthly Savings** (from cleared debt/budget cuts) | **LOW** | **Corporate Bond Funds** or **Fixed Deposits (FDs)** | Slightly higher returns than liquid funds, suitable for the **new monthly cash** you generate for closing costs (₹3-5 Lakh buffer). |
+        | **Existing SIPs** (₹{sum(r['amount'] for r in REGULARS if 'SIP' in r['item']):,.0f}/month) | **HIGH/MODERATE** | **Continue your existing SIPs**. | These funds are for long-term goals (5+ years). Do **not** stop these or redirect them to your short-term home goal. |
+
+        **Key Action:** Move your ₹40 Lakh down payment from any high-risk investment (like a volatile stock or balanced fund) immediately into the recommended **Liquid/Ultra Short Duration Funds**.
+        """)
+
     else:
-        st.info("No credit card bills generated this month. Your next major payment cycle will start soon.")
-    
-    st.markdown("""
-    **Long-Term Debt Strategy:**
-    * **Shortest Tenure First (Snowball-like):** The **Movers & Packers** EMI is due to end in **2 months**. Focusing any extra principal payment here will free up **₹23,567/month** cash flow rapidly.
-    * **High Value, Long Term:** The **Wedding Loan** has the largest non-home loan outstanding (**₹6.34L**) and a tenure of **19 months**. After the short Cred EMI is cleared, attack this loan to significantly reduce your debt profile.
-    """)
+        st.info("No short-term unsecured debt data available for generating a dynamic reduction plan.")
+        st.markdown(
+        """
+        **General Guidance:**
+        1. **Prioritize High-Interest Debt:** If you have any debt, attack the one with the highest interest rate (Avalanche method) to save the most money overall, or the one with the lowest outstanding balance (Snowball method) to free up cash flow quickly. For a 1-year home loan application, **freeing up cash flow (Snowball)** is usually more impactful.
+        2. **Investments:** For a goal that is **less than 3 years away**, always choose **low-risk instruments** like **Liquid Mutual Funds** or **Short-Term Fixed Deposits** to protect your capital. Avoid equity markets entirely for short-term goals.
+        """
+        )
 
 else:
     st.info("Upload your transactions CSV to begin.")
