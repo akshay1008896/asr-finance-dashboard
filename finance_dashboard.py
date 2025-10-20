@@ -6,6 +6,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import streamlit as st
+from dateutil.relativedelta import relativedelta
 
 st.set_page_config(page_title="ASR Finance Dashboard", layout="wide")
 st.title("📊 ASR Finance Dashboard — Bills, SIPs, & Cash Flow")
@@ -15,36 +16,44 @@ with st.expander("How to use (read this first)", expanded=False):
 1) **Upload your CSV** — columns: Date, Category, Amount, Note, type, Payment mode, To payment mode, Tags.
 2) Pick a **Reference month** (any date in that month). We compute each card's **billing cycle that ends in that month**.
 3) Use these sections:
-   - **Credit Card Dues** (cycle totals → due next month)
-   - **Regular Expenses** (toggle Paid)
-   - **Cash Flow Simulator** (date-wise)
-   - **Expenses by Card** (cycle transactions + category breakdown + CSV)
-   - **Top Merchants per Card** (choose analysis window)
-   - **Monthly Trends (by Card)** (MoM %, anomaly highlight, budget caps)
+    - **Long-Term Debt Summary** (NEW)
+    - **Credit Card Dues** (cycle totals → due next month)
+    - **Regular Expenses** (toggle Paid)
+    - **Cash Flow Simulator** (date-wise)
+    - **Expenses by Card** (cycle transactions + category breakdown + CSV)
+    - **Top Merchants per Card** (choose analysis window)
+    - **Monthly Trends (by Card)** (MoM %, anomaly highlight, budget caps)
 """)
 
 # ---------------------------
 # Config / Rules
 # ---------------------------
+# (cycle_start_day, cycle_end_day, due_day, due_offset_months)
 BILL_CYCLES = {
-    # (cycle_start_day, cycle_end_day, due_day, due_offset_months)
-    "Amex": (22, 21, 12, 1),
+    "Amex": (22, 21, 10, 1), 
     "HSBC": (19, 18, 5, 1),
-    "HSBC Cash": (8, 7, 22, 0),
-    "ICICI": (16, 15, 1, 1),
-    "One": (19, 18, 5, 1),
+    "HSBC Cash": (8, 7, 27, 0),
+    # UPDATED: ICICI cycle from 10th to 9th, due 29th of the same month (offset 0)
+    "ICICI": (10, 9, 29, 0), 
+    "One": (19, 18, 8, 1),
     "SBI": (25, 24, 13, 1),
 }
 
+# Long-Term Debts & EMIs
+DEBTS = [
+    {"type": "Cred EMIs", "item": "Movers & Packers", "amount": 23567, "due_day": 25, "tenure_left": 2, "outstanding": 47134},
+    {"type": "Cred EMIs", "item": "CC & ITR", "amount": 18273, "due_day": 28, "tenure_left": 13, "outstanding": 237549},
+    {"type": "Loans", "item": "Wedding Loan", "amount": 33400, "due_day": 18, "tenure_left": 19, "outstanding": 634600},
+    {"type": "Loans", "item": "Home Loan EMI", "amount": 19000, "due_day": 20, "tenure_left": "~95", "outstanding": 1805000},
+]
+
+# Regular Monthly Expenses (excluding EMIs, but including SIPs and Rent)
 REGULARS = [
     {"item": "Papa", "amount": 40000, "date_hint": "1"},
-    {"item": "Home Loan EMI", "amount": 19000, "date_hint": "20"},
     {"item": "House Rent", "amount": 40000, "date_hint": "1"},
-    {"item": "Wedding EMI", "amount": 33400, "date_hint": "18"},
     {"item": "SIP – 3rd", "amount": 2000, "date_hint": "3"},
     {"item": "SIP – 9th", "amount": 10500, "date_hint": "9"},
     {"item": "SIP – 11th", "amount": 500, "date_hint": "11"},
-    {"item": "Cred – CC & ITR", "amount": 18273, "date_hint": "28"},
 ]
 
 # ---------------------------
@@ -53,65 +62,73 @@ REGULARS = [
 def detect_card(payment_mode: str):
     """
     Map free-text `Payment mode` into canonical card names.
-    Distinguish 'HSBC Cash' (cashback) from plain 'HSBC'.
+    Prioritize explicit card names over general keywords.
     """
     text = str(payment_mode or "").lower()
 
-    # 1) Explicit HSBC Cash (match first so it doesn't fall into plain HSBC)
-    hsbc_cash_patterns = [
-        r"\bhsbcl\b", r"\bhsbc\s*cash\b", r"\bhsbc\s*cashback\b",
-        r"\bhsbc\s*cash\s*back\b", r"\bhsbc\s*cb\b"
-    ]
-    if any(re.search(p, text) for p in hsbc_cash_patterns):
-        return "HSBC Cash"
-
-    # 2) Regular HSBC (anything 'hsbc' that is NOT cash/cashback)
-    if "hsbc" in text:
-        if not any(w in text for w in ["cash", "cashback", "cash-back", "cash back", "cb", "hsbcl"]):
-            return "HSBC"
-
-    # 3) Other cards via keyword contains
-    if any(k in text for k in ["amex", "plat"]):
+    # 1. Explicit matches for known card names/prefixes
+    if any(k in text for k in ["amex", "plat", "3. may amex"]):
         return "Amex"
-    if any(k in text for k in ["ici", "icici"]):
+    
+    # 2. ICICI / ICI
+    if any(k in text for k in ["ici", "icici", "2.feb ici"]):
         return "ICICI"
-    if any(k in text for k in ["oncecard", "one"]):
-        return "One"
-    if "sbi" in text:
+    
+    # 3. SBI
+    if any(k in text for k in ["sbi", "1. jan sbi"]):
         return "SBI"
 
+    # 4. OneCard (OnceCard)
+    if any(k in text for k in ["oncecard", "one", "5. oncecard"]):
+        if "closed" in text:
+            return None 
+        return "One"
+
+    # 5. HSBC/HSBCL - Distinguish between generic HSBC and the Cash/Cashback/HSBCL one
+    if any(k in text for k in ["hsbcl", "4. jun hsbcl", "hsbc cash", "cashback"]):
+        return "HSBC Cash"
+    if "hsbc" in text:
+        return "HSBC"
+    
     return None
 
 def month_range(y, m):
+    """Returns (start_date, end_date) for a given year/month."""
     start = dt.date(y, m, 1)
-    if m == 12:
-        end = dt.date(y+1, 1, 1) - dt.timedelta(days=1)
-    else:
-        end = dt.date(y, m+1, 1) - dt.timedelta(days=1)
+    end = start + relativedelta(months=1) - dt.timedelta(days=1)
     return start, end
 
 def cycle_window_for_month(card: str, year: int, month: int):
     """Return (cycle_start_date, cycle_end_date, bill_generation_date, due_date) for the cycle that ENDS in `year-month`."""
     start_day, end_day, due_day, due_offset = BILL_CYCLES[card]
-    if month == 1:
-        cycle_start = dt.date(year-1, 12, start_day)
-    else:
-        cycle_start = dt.date(year, month-1, start_day)
+    
+    # Cycle End Date (Bill Generation Date)
     cycle_end = dt.date(year, month, end_day)
     bill_month, bill_year = month, year
+
+    # Cycle Start Date
+    start_date = dt.date(year, month, start_day)
+    if start_day > end_day:
+        cycle_start = start_date - relativedelta(months=1)
+    else:
+        cycle_start = start_date
+
+    # Due Date
     due_month = bill_month + due_offset
     due_year = bill_year
     if due_month > 12:
         due_month -= 12
         due_year += 1
-    return cycle_start, cycle_end, dt.date(bill_year, bill_month, due_day), dt.date(due_year, due_month, due_day)
+    
+    due_dt = dt.date(due_year, due_month, due_day)
+    bill_dt = cycle_end
+
+    return cycle_start, cycle_end, bill_dt, due_dt
 
 def months_back(n, ref_date):
     """Return (start_date, end_date) for the last n months window including the month of ref_date."""
-    y, m = ref_date.year, ref_date.month
-    end = dt.date(y, m, month_range(y, m)[1].day)
-    start_period = (pd.Period(f"{y}-{m}", freq="M") - n + 1)
-    start = dt.date(start_period.year, start_period.month, 1)
+    end = dt.date(ref_date.year, ref_date.month, month_range(ref_date.year, ref_date.month)[1].day)
+    start = end - relativedelta(months=n) + relativedelta(days=1)
     return start, end
 
 # ---------------------------
@@ -121,7 +138,7 @@ st.sidebar.header("⚙️ Budget Caps (per card)")
 budget_caps = {}
 for card in BILL_CYCLES.keys():
     budget_caps[card] = st.sidebar.number_input(
-        f"{card} cap (₹)", min_value=0, value=0, step=1000, help="0 = no cap check"
+        f"{card} cap (₹)", min_value=0, value=250000 if card == "Amex" else 0, step=1000, help="0 = no cap check"
     )
 
 # ---------------------------
@@ -134,13 +151,13 @@ with colA:
 with colB:
     starting_balance = st.number_input("Starting balance for month (₹)", min_value=0, value=0, step=1000)
 with colC:
-    extra_buffer = st.number_input("Extra buffer (₹)", min_value=0, value=0, step=500)
+    extra_buffer = st.number_input("Extra buffer (₹)", min_value=0, value=50000, step=500)
 
 if "paid_flags" not in st.session_state:
     st.session_state.paid_flags = {}
 
 # ---------------------------
-# Main
+# Main Logic
 # ---------------------------
 if uploaded is not None:
     df = pd.read_csv(uploaded)
@@ -155,112 +172,212 @@ if uploaded is not None:
     # Clean + map cards
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Card"] = df["Payment mode"].apply(detect_card)
+    df = df[df["Date"].notna()].copy() # Filter out rows with invalid dates
 
     # Detector diagnostics
-    with st.expander("🧪 Detector diagnostics (what did we map?)", expanded=False):
-        st.write("Top raw Payment mode values (sample):")
-        st.dataframe(
-            df["Payment mode"].astype(str).str.lower().value_counts().head(20).rename_axis("Payment mode").reset_index(name="count"),
-            use_container_width=True
-        )
+    with st.expander("🧪 Detector diagnostics (Card mapping)", expanded=False):
         st.write("Mapped Card counts:")
         st.dataframe(
             df["Card"].value_counts(dropna=False).rename_axis("Card").reset_index(name="count"),
             use_container_width=True
         )
-        st.caption("If any cashback entries still map to HSBC or None, tell me the exact text and I’ll add a rule.")
+
+    # -------- Long-Term Debt Summary --------
+    st.subheader("🏦 Long-Term Debt & EMI Summary")
+    debt_df = pd.DataFrame(DEBTS)
+    total_outstanding = debt_df[debt_df["tenure_left"].apply(lambda x: isinstance(x, int))]["outstanding"].sum()
+    total_emi = debt_df["amount"].sum()
+    
+    st.markdown(f"**Total Monthly EMI Outflow: ₹{total_emi:,.2f}**")
+    st.markdown(f"**Total Tracked Outstanding (Excl. Home Loan): ₹{total_outstanding:,.2f}**")
+    
+    st.dataframe(
+        debt_df.style.format({
+            "Monthly (₹)": "₹{:,.0f}",
+            "Outstanding (₹)": "₹{:,.0f}"
+        }).set_caption("Note: Home Loan Tenure/Outstanding are approximations."),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "amount": st.column_config.NumberColumn("Monthly (₹)"),
+            "due_day": st.column_config.TextColumn("Due Day"),
+            "outstanding": st.column_config.NumberColumn("Outstanding (₹)"),
+            "tenure_left": st.column_config.TextColumn("Tenure Left")
+        }
+    )
 
     # -------- Per-card cycle totals for chosen month --------
     y, m = today.year, today.month
     rows = []
     per_card_transactions = {}
+    total_next_due = 0
+
     for card in BILL_CYCLES.keys():
         cstart, cend, bill_dt, due_dt = cycle_window_for_month(card, y, m)
-        mask = (df["Card"] == card) & (df["Date"].dt.date >= cstart) & (df["Date"].dt.date <= cend)
-        sub = df.loc[mask, ["Date", "Category", "Amount", "Note", "Payment mode", "Tags"]].copy().sort_values("Date")
+        
+        # We look at expenses from the start of the cycle up to 'today' for the current liability.
+        mask = (df["Card"] == card) & (df["Date"].dt.date > cstart) & (df["Date"].dt.date <= today) 
+        
+        sub = df.loc[mask & (df["type"] == "Expense"), ["Date", "Category", "Amount", "Note", "Payment mode", "Tags"]].copy().sort_values("Date")
+        
         amount = float(sub["Amount"].sum()) if not sub.empty else 0.0
         txn_count = int(sub.shape[0])
+        
         per_card_transactions[card] = {"window": (cstart, cend, bill_dt, due_dt), "df": sub, "amount": amount, "count": txn_count}
+        
+        # The bill is generated this month (due next month) if the Cycle End is this month.
+        if cend.month == m and cend.year == y: 
+            total_next_due += amount
+        
         rows.append({
             "Card": card,
             "Cycle Start": cstart,
-            "Cycle End": cend,
-            "Bill Generation": bill_dt,
+            "Cycle End (Bill Gen)": cend,
             "Due Date": due_dt,
             "Transactions": txn_count,
-            "Amount (₹)": round(amount, 2)
+            "Current Liability (₹)": round(amount, 2)
         })
+        
     card_due_df = pd.DataFrame(rows).sort_values(by="Due Date")
 
-    st.subheader("Credit Card Dues (cycle that ends this month → due next month)")
-    st.dataframe(card_due_df, use_container_width=True)
+    st.subheader("💳 Credit Card Dues (cycle that ends this month → due next month)")
+    st.markdown(f"**Total Estimated Cash-Out for Next Month (Bills Generated {today.strftime('%b')}): ₹{total_next_due:,.2f}**")
+    
+    def style_bill_gen(date_col):
+        is_today_or_tomorrow = (date_col == date.today()) | (date_col == date.today() + dt.timedelta(days=1))
+        return ['background-color: yellow; font-weight: bold' if v else '' for v in is_today_or_tomorrow]
+
+    st.dataframe(
+        card_due_df.style.apply(style_bill_gen, subset=["Cycle End (Bill Gen)"]), 
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Current Liability (₹)": st.column_config.NumberColumn(format="₹%,.2f")
+        }
+    )
 
     # -------- Regular Expenses with Paid toggles --------
-    start_m, end_m = month_range(y, m)
-    regs = []
+    st.subheader("🗓️ Regular Expenses (incl. SIPs & Rent) - Toggle Paid to exclude from cash-out")
+    
+    # Combine REGULARS and DEBTS for display/toggling
+    all_cash_outs = []
     for r in REGULARS:
-        d = min(int(r["date_hint"]), end_m.day)
-        due = dt.date(y, m, d)
-        key = f"REG::{r['item']}::{due.isoformat()}"
-        paid = st.session_state.paid_flags.get(key, False)
-        regs.append({"Item": r["item"], "Amount (₹)": r["amount"], "Due Date": due, "Paid": paid, "Key": key})
-    regs_df = pd.DataFrame(regs).sort_values(by="Due Date")
+        due = dt.date(y, m, min(int(r["date_hint"]), month_range(y, m)[1].day))
+        all_cash_outs.append({"Item": r["item"], "Amount (₹)": r["amount"], "Due Date": due, "Type": "Regular"})
+    
+    for d in DEBTS:
+        due = dt.date(y, m, min(int(d["due_day"]), month_range(y, m)[1].day))
+        all_cash_outs.append({"Item": d["item"], "Amount (₹)": d["amount"], "Due Date": due, "Type": d["type"]})
+        
+    cash_out_df = pd.DataFrame(all_cash_outs).sort_values(by="Due Date")
+    
+    # Apply session state logic for paid status
+    cash_out_df["Key"] = cash_out_df.apply(lambda r: f"CASH::{r['Item']}::{r['Due Date'].isoformat()}", axis=1)
+    cash_out_df["Paid"] = cash_out_df["Key"].map(lambda k: st.session_state.paid_flags.get(k, False))
+    
+    cols = st.columns([3, 2, 2, 1])
+    cols[0].markdown("**Item (Type)**")
+    cols[1].markdown("**Amount (₹)**")
+    cols[2].markdown("**Due Date**")
+    cols[3].markdown("**Paid?**")
 
-    st.subheader("Regular Expenses (toggle Paid to exclude from cash-out)")
-    for i, row in regs_df.iterrows():
-        c1, c2, c3, c4 = st.columns([3,2,2,1])
-        with c1: st.markdown(f"**{row['Item']}**")
+    for i, row in cash_out_df.iterrows():
+        c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+        with c1: st.markdown(f"**{row['Item']}** ({row['Type']})")
         with c2: st.markdown(f"₹{row['Amount (₹)']:,}")
-        with c3: st.markdown(f"{row['Due Date'].isoformat()}")
+        with c3: st.markdown(f"{row['Due Date'].strftime('%b %d, %Y')}")
         with c4:
-            paid = st.checkbox("Paid", value=row["Paid"], key=row["Key"])
+            paid = st.checkbox("", value=row["Paid"], key=row["Key"], label_visibility="collapsed")
             st.session_state.paid_flags[row["Key"]] = paid
-    regs_df["Paid"] = regs_df["Key"].map(lambda k: st.session_state.paid_flags.get(k, False))
+    
+    cash_out_df["Paid"] = cash_out_df["Key"].map(lambda k: st.session_state.paid_flags.get(k, False))
 
     # -------- Cash Flow Simulator --------
-    st.subheader("Cash Flow Simulator (by date)")
+    st.subheader("💰 Cash Flow Simulator (by date)")
+    
     balance = starting_balance + extra_buffer
     events = []
+    
+    # a) Credit Card Bills 
     for _, r in card_due_df.iterrows():
-        events.append({"Date": r["Due Date"], "Event": f"{r['Card']} Bill", "Amount (₹)": r["Amount (₹)"]})
-    for _, r in regs_df.iterrows():
-        if not r["Paid"]:
-            events.append({"Date": r["Due Date"], "Event": r["Item"], "Amount (₹)": r["Amount (₹)"]})
-    ev_df = pd.DataFrame(events).sort_values(by="Date")
+        # Only show the bill payment due date, not bill generation
+        if r["Due Date"].month == today.month: 
+             events.append({"Date": r["Due Date"], "Event": f"{r['Card']} Bill Payment (CC)", "Amount (₹)": r["Current Liability (₹)"], "Type": "CC Bill"})
+    
+    # b) Other Cash Outs (Regulars and EMIs)
+    for _, r in cash_out_df.iterrows():
+        if not r["Paid"] and r["Due Date"].month == today.month:
+            events.append({"Date": r["Due Date"], "Event": r["Item"], "Amount (₹)": r["Amount (₹)"], "Type": r["Type"]})
+
+    ev_df = pd.DataFrame(events).sort_values(by="Date").drop_duplicates(subset=["Date", "Event"]) # Drop potential duplicates
     rows2 = []
     for _, ev in ev_df.iterrows():
         balance -= ev["Amount (₹)"]
-        rows2.append([ev["Date"], ev["Event"], ev["Amount (₹)"], balance])
-    sim_df = pd.DataFrame(rows2, columns=["Date","Event","Amount (₹)","Balance After (₹)"])
-    st.dataframe(sim_df, use_container_width=True)
+        rows2.append([ev["Date"], ev["Event"], ev["Amount (₹)"], round(balance, 2)])
+        
+    sim_df = pd.DataFrame(rows2, columns=["Date", "Event", "Amount (₹)", "Balance After (₹)"])
+    
+    def style_low_balance(df_in):
+        styles = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
+        # Low balance highlight
+        styles.loc[df_in['Balance After (₹)'] < 0, 'Balance After (₹)'] = 'background-color: #ffcccc; color: red; font-weight: bold'
+        styles.loc[(df_in['Balance After (₹)'] >= 0) & (df_in['Balance After (₹)'] < extra_buffer), 'Balance After (₹)'] = 'background-color: #ffefcc'
+        return styles
 
+    st.markdown(f"**Starting Cash Balance: ₹{starting_balance:,.2f}** (with Buffer: ₹{extra_buffer:,.2f})")
+    st.dataframe(
+        sim_df.style.apply(style_low_balance, axis=None).format({
+            "Amount (₹)": "₹{:,.2f}",
+            "Balance After (₹)": "₹{:,.2f}",
+            "Date": lambda x: x.strftime('%b %d')
+        }), 
+        use_container_width=True,
+        hide_index=True
+    )
+    
     # -------- Expenses by Card (detailed) --------
     st.markdown("---")
     st.header("🧾 Expenses by Card (for this cycle)")
-    st.caption("Transactions included in each card's cycle window above.")
+    st.caption("Transactions included in each card's cycle window up to today.")
+    
+    summary_df = card_due_df[["Card","Transactions","Current Liability (₹)","Cycle Start","Cycle End (Bill Gen)","Due Date"]].copy()
     st.dataframe(
-        card_due_df[["Card","Transactions","Amount (₹)","Cycle Start","Cycle End","Bill Generation","Due Date"]],
-        use_container_width=True
+        summary_df, 
+        use_container_width=True,
+        hide_index=True,
+        column_config={"Current Liability (₹)": st.column_config.NumberColumn(format="₹%,.2f")}
     )
 
     for card in BILL_CYCLES.keys():
         detail = per_card_transactions[card]
         cstart, cend, bill_dt, due_dt = detail["window"]
         sub = detail["df"]
-        with st.expander(f"{card} — {cstart} → {cend} | Bill: {bill_dt} | Due: {due_dt} | Total: ₹{detail['amount']:.2f} | Txns: {detail['count']}"):
+        
+        category_breakdown = sub.groupby("Category")["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
+        category_breakdown["% of Total"] = (category_breakdown["Amount"] / detail['amount']) * 100
+        
+        expander_title = f"{card} | Due: {due_dt.strftime('%b %d')} | Liability: ₹{detail['amount']:,.2f} | Txns: {detail['count']}"
+        with st.expander(expander_title):
             if sub.empty:
-                st.info("No transactions for this cycle.")
+                st.info("No transactions for this cycle yet.")
             else:
-                if "Category" in sub.columns:
-                    cat = sub.groupby(["Category","Note"], dropna=False)["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
-                    st.markdown("**Top Merchants (Category + Note) — Cycle window**")
-                    st.dataframe(cat.head(10), use_container_width=True)
-                st.markdown("**Transactions**")
-                st.dataframe(sub, use_container_width=True)
+                st.markdown("**Category Breakdown**")
+                st.dataframe(
+                    category_breakdown.style.format({
+                        "Amount": "₹{:,.0f}",
+                        "% of Total": "{:.1f}%"
+                    }), 
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                st.markdown("**Transactions (Cycle Window)**")
+                st.dataframe(sub.style.format({"Amount": "₹{:,.0f}"}), use_container_width=True, hide_index=True)
+                
                 csv_buf = io.StringIO()
                 sub.to_csv(csv_buf, index=False)
                 st.download_button(
-                    f"Download {card} Cycle CSV",
+                    f"Download {card} Cycle Transactions CSV",
                     data=csv_buf.getvalue(),
                     file_name=f"{card}_cycle_{cstart}_to_{cend}.csv",
                     mime="text/csv"
@@ -269,51 +386,50 @@ if uploaded is not None:
     # -------- Top Merchants per Card (selectable window) --------
     st.markdown("---")
     st.header("🏷️ Top Merchants per Card — choose analysis window")
-    window_choice = st.radio("Window", ["Cycle window", "Last 3 months", "Last 6 months", "Last 12 months"], horizontal=True, index=1)
+    window_choice = st.radio("Window", ["Current Cycle", "Last 3 months", "Last 6 months", "Last 12 months"], horizontal=True, index=1)
 
-    if window_choice == "Cycle window":
-        global_start, global_end = None, None
+    if window_choice == "Current Cycle":
+        pass 
     else:
         nmap = {"Last 3 months": 3, "Last 6 months": 6, "Last 12 months": 12}
         global_start, global_end = months_back(nmap[window_choice], today)
 
     for card in BILL_CYCLES.keys():
-        if window_choice == "Cycle window":
-            cstart, cend, _, _ = per_card_transactions[card]["window"]
-            mask = (df["Card"] == card) & (df["Date"].dt.date >= cstart) & (df["Date"].dt.date <= cend)
-            window_label = f"{cstart} → {cend}"
+        if window_choice == "Current Cycle":
+            cstart, _, _, _ = per_card_transactions[card]["window"]
+            mask = (df["Card"] == card) & (df["Date"].dt.date > cstart) & (df["Date"].dt.date <= today)
+            window_label = f"{cstart} → {today}"
         else:
             mask = (df["Card"] == card) & (df["Date"].dt.date >= global_start) & (df["Date"].dt.date <= global_end)
             window_label = f"{global_start} → {global_end}"
 
-        sub = df.loc[mask, ["Date","Category","Note","Amount"]].copy().sort_values("Amount", ascending=False)
-        with st.expander(f"{card} — Top Merchants | Window: {window_label}"):
+        sub = df.loc[mask & (df["type"] == "Expense"), ["Date","Category","Note","Amount"]].copy()
+        
+        with st.expander(f"**{card}** — Top Merchants | Window: {window_label}"):
             if sub.empty:
-                st.info("No transactions in this window.")
+                st.info("No expense transactions in this window.")
             else:
                 top = sub.groupby(["Category","Note"], dropna=False)["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
-                st.dataframe(top.head(10), use_container_width=True)
+                st.dataframe(top.head(10).style.format({"Amount": "₹{:,.0f}"}), use_container_width=True, hide_index=True)
+                
                 buf = io.StringIO()
                 top.to_csv(buf, index=False)
                 st.download_button(
                     f"Download Top Merchants — {card}",
                     data=buf.getvalue(),
-                    file_name=f"top_merchants_{card}.csv",
+                    file_name=f"top_merchants_{card}_{window_choice.replace(' ', '_')}.csv",
                     mime="text/csv"
                 )
 
     # -------- Monthly Trends (by Card) with MoM %, Anomaly, Budget Caps --------
     st.markdown("---")
-    st.header("📈 Monthly Trends (by Card)")
-    st.caption("Rolling monthly totals; anomalies (>1.5× median) and over-cap highlighted. Use sidebar to set caps.")
+    st.header("📈 Monthly Trends, MoM % Change, & Anomalies")
+    st.caption("Rolling monthly totals for expense transactions; anomalies (>1.5× median) and over-cap highlighted. Use sidebar to set caps.")
 
     trends_df = df.copy()
+    trends_df = trends_df[trends_df["type"] == "Expense"]
     trends_df["YYYY-MM"] = trends_df["Date"].dt.to_period("M").astype(str)
-
-    include_credits = st.checkbox("Include credits/refunds as negative in monthly totals", value=True)
-    if not include_credits:
-        trends_df = trends_df[trends_df["Amount"] > 0]
-
+    
     trends_df = trends_df[trends_df["Card"].notna()]
     monthly = (
         trends_df.groupby(["YYYY-MM", "Card"])["Amount"]
@@ -324,54 +440,92 @@ if uploaded is not None:
         .sort_index()
     )
 
-    # Window & card selection (from data, not only BILL_CYCLES, so HSBC Cash appears if present)
-    window = st.radio("Window", ["Last 6 months", "Last 12 months"], horizontal=True, index=0)
-    n_months = 6 if window == "Last 6 months" else 12
-    if monthly.shape[0] > n_months:
+    window = st.radio("Window", ["Last 6 months", "Last 12 months", "All Time"], horizontal=True, index=1)
+    n_months = 12
+    if window == "Last 6 months":
+        n_months = 6
+    if window != "All Time" and monthly.shape[0] > n_months:
         monthly = monthly.iloc[-n_months:, :]
 
-    available_cards = sorted([c for c in monthly.columns if pd.notna(c)])
-    selected_cards = st.multiselect("Choose cards to plot", options=available_cards, default=available_cards)
+    available_cards = sorted([c for c in monthly.columns if pd.notna(c) and c in BILL_CYCLES.keys()])
+    selected_cards = st.multiselect("Choose cards to analyze", options=available_cards, default=available_cards)
+
+    mom = monthly.pct_change().replace([np.inf, -np.inf], np.nan) * 100.0
+    
+    combined_df = monthly.copy()
+    for card in selected_cards:
+        combined_df[f"{card} MoM %"] = mom[card]
+        
+    combined_df = combined_df[sorted(combined_df.columns)].copy()
 
     def style_anomalies_and_caps(df_in: pd.DataFrame):
-        df = df_in.copy()
-        med = df.median(axis=0)
+        df_out = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
+        
+        for col in [c for c in df_in.columns if "MoM %" not in c]:
+            data_series = df_in[col].iloc[:-1] if df_in.index[-1].startswith(str(date.today().year) + '-' + str(date.today().month).zfill(2)) else df_in[col]
+            med = data_series[data_series > 0].median()
+            
+            if med > 0:
+                is_anom = df_in[col] > 1.5 * med
+                df_out.loc[is_anom, col] = "background-color: #f7a5a5; font-weight: bold"
 
-        def color_cells(val, col):
             cap = budget_caps.get(col, 0) or 0
-            is_anom = val > 1.5 * med[col] if med[col] > 0 else False
-            is_over_cap = cap > 0 and val > cap
-            if is_over_cap or is_anom:
-                return "background-color: #ffcccc; font-weight: 600"
-            return ""
+            if cap > 0:
+                is_over_cap = df_in[col] > cap
+                df_out.loc[is_over_cap, col] = "background-color: #ffcccc; font-weight: bold"
+            
+            mom_col = f"{col} MoM %"
+            if mom_col in df_in.columns:
+                is_high_mom = (df_in[mom_col] > 50) & (df_in[col] > med * 1.1)
+                df_out.loc[is_high_mom, mom_col] = "background-color: #d1f7c4; font-weight: bold"
 
-        styled = df.style.apply(lambda col: [color_cells(v, col.name) for v in col], axis=0).format("{:,.0f}")
-        return styled
+        return df_out
 
     if selected_cards:
-        st.subheader("Trend Chart")
-        st.line_chart(monthly[selected_cards])
+        st.subheader("📊 Trend Chart")
+        plot_df = monthly[selected_cards].copy()
+        st.line_chart(plot_df)
 
-        st.subheader("Monthly Totals (₹) — anomalies & over-cap highlighted")
-        st.dataframe(style_anomalies_and_caps(monthly[selected_cards]), use_container_width=True)
-
-        st.subheader("MoM % Change")
-        mom = monthly[selected_cards].pct_change().replace([np.inf, -np.inf], np.nan) * 100.0
-        mom = mom.round(1)
-        st.dataframe(mom, use_container_width=True)
-
-        # Exports
-        buf_tot = io.StringIO()
-        monthly[selected_cards].to_csv(buf_tot)
-        st.download_button("Download Monthly Totals CSV", data=buf_tot.getvalue(),
-                           file_name=f"monthly_totals_{n_months}m.csv", mime="text/csv")
-
-        buf_mom = io.StringIO()
-        mom.to_csv(buf_mom)
-        st.download_button("Download MoM % CSV", data=buf_mom.getvalue(),
-                           file_name=f"monthly_mom_{n_months}m.csv", mime="text/csv")
+        st.subheader("Monthly Totals (₹) and MoM % Change")
+        
+        format_dict = {c: "₹{:,.0f}" for c in monthly.columns}
+        format_dict.update({c: "{:.1f}%" for c in combined_df.columns if "MoM %" in c})
+        
+        st.dataframe(
+            combined_df.style.apply(style_anomalies_and_caps, axis=None).format(format_dict), 
+            use_container_width=True
+        )
+        
+        st.download_button(
+            "Download Monthly Trends Data (CSV)", 
+            data=monthly[selected_cards].to_csv().encode('utf-8'),
+            file_name=f"monthly_trends_{n_months}m.csv", 
+            mime="text/csv"
+        )
     else:
-        st.info("Select at least one card to plot monthly trends.")
+        st.info("Select at least one card to analyze monthly trends.")
+
+    # -------- Debt Reduction Suggestions --------
+    st.markdown("---")
+    st.header("💡 Debt Reduction & Account Management Suggestions")
+    
+    # FIX APPLIED HERE: Using .apply(lambda x: x.month) instead of .dt.month to avoid AttributeError
+    due_bills = card_due_df[card_due_df["Cycle End (Bill Gen)"].apply(lambda x: x.month) == m].sort_values("Current Liability (₹)", ascending=False)
+    
+    if not due_bills.empty:
+        st.markdown(f"""
+        1. **High-Priority Payment Focus:** Your bills generated this month, totaling **₹{total_next_due:,.2f}**, plus your monthly EMIs (**₹{total_emi:,.2f}**), are the priority. All are due in **{ (date.today() + relativedelta(months=1)).strftime('%B') }**.
+        2. **Top Liability:** The largest single bill is **{due_bills.iloc[0]['Card']}** with **₹{due_bills.iloc[0]['Current Liability (₹)']:,.2f}**.
+        3. **Cash Flow Tight Window:** The **Cash Flow Simulator** shows a projected cash balance after all monthly payments. If this dips low, prioritize paying **Movers & Packers** first, as it has the shortest tenure left (**2 months**).
+        """)
+    else:
+        st.info("No credit card bills generated this month. Your next major payment cycle will start soon.")
+    
+    st.markdown("""
+    **Long-Term Debt Strategy:**
+    * **Shortest Tenure First (Snowball-like):** The **Movers & Packers** EMI is due to end in **2 months**. Focusing any extra principal payment here will free up **₹23,567/month** cash flow rapidly.
+    * **High Value, Long Term:** The **Wedding Loan** has the largest non-home loan outstanding (**₹6.34L**) and a tenure of **19 months**. After the short Cred EMI is cleared, attack this loan to significantly reduce your debt profile.
+    """)
 
 else:
     st.info("Upload your transactions CSV to begin.")
