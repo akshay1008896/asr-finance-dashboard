@@ -1,0 +1,10 @@
+[server]
+headless = true
+runOnSave = true
+maxUploadSize = 200
+
+[theme]
+base = "light"
+
+[browser]
+gatherUsageStats = false
