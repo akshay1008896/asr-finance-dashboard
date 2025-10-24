@@ -98,29 +98,33 @@ def month_range(y, m):
     end = start + relativedelta(months=1) - dt.timedelta(days=1)
     return start, end
 
+def safe_date(year: int, month: int, day: int):
+    """Return a valid date by clamping day to the last day of the month when needed."""
+    last_day = month_range(year, month)[1].day
+    return dt.date(year, month, min(day, last_day))
+
 def cycle_window_for_month(card: str, year: int, month: int):
     """Return (cycle_start_date, cycle_end_date, bill_generation_date, due_date) for the cycle that ENDS in `year-month`."""
     start_day, end_day, due_day, due_offset = BILL_CYCLES[card]
-    
-    # Cycle End Date (Bill Generation Date)
-    cycle_end = dt.date(year, month, end_day)
+    # Cycle End Date (Bill Generation Date) - clamp to valid day for month
+    cycle_end = safe_date(year, month, end_day)
     bill_month, bill_year = month, year
 
     # Cycle Start Date
-    start_date = dt.date(year, month, start_day)
+    start_date = safe_date(year, month, start_day)
     if start_day > end_day:
         cycle_start = start_date - relativedelta(months=1)
     else:
         cycle_start = start_date
 
-    # Due Date
+    # Due Date (apply offset, handle year rollover) and clamp day
     due_month = bill_month + due_offset
     due_year = bill_year
     if due_month > 12:
         due_month -= 12
         due_year += 1
-    
-    due_dt = dt.date(due_year, due_month, due_day)
+
+    due_dt = safe_date(due_year, due_month, due_day)
     bill_dt = cycle_end
 
     return cycle_start, cycle_end, bill_dt, due_dt
@@ -130,6 +134,69 @@ def months_back(n, ref_date):
     end = dt.date(ref_date.year, ref_date.month, month_range(ref_date.year, ref_date.month)[1].day)
     start = end - relativedelta(months=n) + relativedelta(days=1)
     return start, end
+
+
+def _find_cycle_containing_date(card: str, target_date: dt.date):
+    """Return the cycle (start,end,bill_dt,due_dt) that contains target_date.
+
+    The function checks the cycle for the month of target_date and its immediate neighbors
+    (previous and next month) and returns the cycle where cycle_start <= target_date <= cycle_end.
+    If none match, return the cycle for the month of target_date.
+    """
+    year = target_date.year
+    month = target_date.month
+
+    # try current, previous, next
+    for offset in (0, -1, 1):
+        y = (dt.date(year, month, 1) + relativedelta(months=offset)).year
+        m = (dt.date(year, month, 1) + relativedelta(months=offset)).month
+        try:
+            cstart, cend, bill_dt, due_dt = cycle_window_for_month(card, y, m)
+        except Exception:
+            # fallback to naive cycle for current month if something unexpected occurs
+            cstart, cend, bill_dt, due_dt = cycle_window_for_month(card, year, month)
+
+        if cstart <= target_date <= cend:
+            return cstart, cend, bill_dt, due_dt
+
+    # default to cycle for the target month
+    return cycle_window_for_month(card, year, month)
+
+
+def choose_card_cycle(df: pd.DataFrame, card: str, ref_date: date):
+    """Choose the most relevant cycle for `card` based on transactions in `df`.
+
+    Behavior:
+    - If the card has no transactions, fall back to the cycle that ends in ref_date's month.
+    - Otherwise, find the cycle that contains the card's last transaction date. If the last
+      transaction appears to be a payment (negative amount or type contains 'payment'/'credit'/'refund'),
+      consider the next cycle (advance by one month) since the bill was likely paid and the next cycle is active.
+    """
+    # default
+    y, m = ref_date.year, ref_date.month
+
+    card_txns = df[df["Card"] == card]
+    if card_txns.empty:
+        return cycle_window_for_month(card, y, m)
+
+    last_row = card_txns.sort_values("Date").iloc[-1]
+    last_date = last_row["Date"].date()
+
+    # detect if last txn is likely a payment
+    last_type = str(last_row.get("type", "")).lower()
+    last_amount = float(last_row.get("Amount", 0.0))
+    is_payment_like = (last_amount < 0) or any(k in last_type for k in ("payment", "credit", "refund"))
+
+    if is_payment_like:
+        # advance to next calendar month and return that cycle
+        next_dt = last_date + relativedelta(months=1)
+        try:
+            return cycle_window_for_month(card, next_dt.year, next_dt.month)
+        except Exception:
+            return cycle_window_for_month(card, y, m)
+
+    # otherwise return the cycle that contains the last transaction
+    return _find_cycle_containing_date(card, last_date)
 
 # ---------------------------
 # Sidebar: Budget Caps
@@ -222,22 +289,24 @@ if uploaded is not None:
     total_next_due = 0
 
     for card in BILL_CYCLES.keys():
-        cstart, cend, bill_dt, due_dt = cycle_window_for_month(card, y, m)
-        
+        # choose cycle dynamically for each card based on its last transaction
+        cstart, cend, bill_dt, due_dt = choose_card_cycle(df, card, today)
+
         # We look at expenses from the start of the cycle up to 'today' for the current liability.
-        mask = (df["Card"] == card) & (df["Date"].dt.date > cstart) & (df["Date"].dt.date <= today) 
-        
+        # Use inclusive start so transactions on cycle start date are included.
+        mask = (df["Card"] == card) & (df["Date"].dt.date >= cstart) & (df["Date"].dt.date <= today)
+
         sub = df.loc[mask & (df["type"] == "Expense"), ["Date", "Category", "Amount", "Note", "Payment mode", "Tags"]].copy().sort_values("Date")
-        
+
         amount = float(sub["Amount"].sum()) if not sub.empty else 0.0
         txn_count = int(sub.shape[0])
-        
+
         per_card_transactions[card] = {"window": (cstart, cend, bill_dt, due_dt), "df": sub, "amount": amount, "count": txn_count}
-        
-        # The bill is generated this month (due next month) if the Cycle End is this month.
-        if cend.month == m and cend.year == y: 
+
+        # The bill is generated this month (due next month) if the Cycle End is this card's cycle end month.
+        if cend.month == m and cend.year == y:
             total_next_due += amount
-        
+
         rows.append({
             "Card": card,
             "Cycle Start": cstart,
