@@ -162,15 +162,24 @@ if "paid_flags" not in st.session_state:
 if uploaded is not None:
     df = pd.read_csv(uploaded)
 
-    # Validate
-    required_cols = {"Date", "Amount", "Payment mode"}
+    # Validate required columns (include 'type' since many parts of the app filter by it)
+    required_cols = {"Date", "Amount", "Payment mode", "type"}
     missing = required_cols.difference(df.columns)
     if missing:
         st.error(f"CSV missing required columns: {missing}")
         st.stop()
 
+    # Ensure optional columns exist so later lookups won't KeyError
+    for opt_col in ["Category", "Note", "Tags"]:
+        if opt_col not in df.columns:
+            df[opt_col] = ""
+
     # Clean + map cards
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    # Ensure Amount is numeric to allow sums and comparisons
+    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0)
+    # Normalize type column to string and fill NAs
+    df["type"] = df["type"].fillna("").astype(str)
     df["Card"] = df["Payment mode"].apply(detect_card)
     df = df[df["Date"].notna()].copy() # Filter out rows with invalid dates
 
