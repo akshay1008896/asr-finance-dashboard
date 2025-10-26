@@ -1,0 +1,32 @@
+[
+  {
+    "id": "132126fd-85fd-4d5c-a909-1d843ce02b38",
+    "item": "House Rent",
+    "amount": 40000.0,
+    "date_hint": "1"
+  },
+  {
+    "id": "6d2ead61-527e-49e8-a03c-ca7ff7c045c2",
+    "item": "Papa",
+    "amount": 40000.0,
+    "date_hint": "1"
+  },
+  {
+    "id": "26ede479-6d73-4142-90d1-0923a05ea035",
+    "item": "SIP – 3rd",
+    "amount": 2000.0,
+    "date_hint": "3"
+  },
+  {
+    "id": "c5fe834d-9776-4746-8195-7eb661341fff",
+    "item": "SIP – 9th",
+    "amount": 10500.0,
+    "date_hint": "9"
+  },
+  {
+    "id": "4ffbb788-d65a-493f-8dd6-ac599c7710f4",
+    "item": "SIP – 11th",
+    "amount": 500.0,
+    "date_hint": "11"
+  }
+]

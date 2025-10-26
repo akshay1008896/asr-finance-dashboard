@@ -1,0 +1,47 @@
+[
+  {
+    "id": "5565a43e-574c-41f8-87b5-7af4b496bfef",
+    "dtype": "Loan",
+    "item": "Home Loan",
+    "amount": 19000.0,
+    "due_day": 20,
+    "tenure_left": "~95",
+    "outstanding": 1805000.0
+  },
+  {
+    "id": "ce9d50cf-9ef1-4e9c-8433-8a6aa1dfbec4",
+    "dtype": "Loan",
+    "item": "Wedding Loan",
+    "amount": 33400.0,
+    "due_day": 18,
+    "tenure_left": "19",
+    "outstanding": 634600.0
+  },
+  {
+    "id": "146413e5-d783-4952-9090-cb0f8cedb7a4",
+    "dtype": "Cred EMIs",
+    "item": "Movers & Packers",
+    "amount": 23567.0,
+    "due_day": 25,
+    "tenure_left": "2",
+    "outstanding": 47134.0
+  },
+  {
+    "id": "0e24885d-56fb-4e5c-ac27-1be196b9bbf8",
+    "dtype": "Cred EMIs",
+    "item": "CC & ITR",
+    "amount": 18273.0,
+    "due_day": 28,
+    "tenure_left": "13",
+    "outstanding": 237549.0
+  },
+  {
+    "id": "13882e44-dbc3-4c0d-a9f4-099244eac89a",
+    "dtype": "Cred EMIs",
+    "item": "Extra",
+    "amount": 17567.0,
+    "due_day": 28,
+    "tenure_left": "1",
+    "outstanding": 17567.0
+  }
+]
