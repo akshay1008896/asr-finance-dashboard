@@ -1,173 +1,96 @@
-# app.py
-import json
-from datetime import date
 import streamlit as st
 import pandas as pd
+from datetime import date
 
-from config import DEFAULT_BILL_CYCLES, DEBTS, REGULARS
-from data import load_csv, validate_dataframe, compute_monthly_for_trends
-from helpers import normalize_columns, detect_card, get_active_cycles
+from data import (
+    load_card_aliases, save_card_aliases,
+    load_cards, save_cards,
+    load_debts, save_debts,
+    load_regulars, save_regulars,
+    load_paid_flags, save_paid_flags
+)
 from ui_sections import (
+    csv_and_mapping_section,
     diagnostics_section,
-    start_balance_override_section,
-    debt_summary_section,
-    per_card_dates_editor_section,
-    bills_tabs_section,
-    quick_due_selector_section,
-    regulars_section,
-    cashflow_section,
-    expenses_by_card_section,
-    merchants_section,
-    trends_section,
-    plan_section,
+    cards_crud_section,
+    debts_crud_section,
+    regulars_crud_section,
+    bills_section
 )
 
-st.set_page_config(page_title="ASR Finance Dashboard", layout="wide")
-st.title("📊 ASR Finance Dashboard — Bills, SIPs, & Cash Flow")
+st.set_page_config(page_title="ASR Finance — Credit Cards & CRUD", layout="wide")
+st.title("📊 ASR Finance Dashboard — Cards, Bills, & Cash Flow")
 
-with st.expander("How to use (read this first)", expanded=False):
-    st.markdown("""
-1) Upload CSV (we auto-normalize headers: `Date`, `Amount`, `Payment mode`, `type`).
-2) Pick a sidebar **Reference month**; the **Bills** section also has its own month selector.
-3) In **Per-card custom dates**, override Cycle Start/End/Due for a given month (JSON import/export).
-4) Add **Salary** and dated **Extra inflows**; simulator credits inflows before outflows on the same date.
-5) **Diagnostics** lets you auto-map new cards and define their cycles.
-""")
+# Sidebar controls for reference month and cash inputs
+st.sidebar.header("⚙️ Global Controls")
+ref_date = st.sidebar.date_input("Reference month (any date in month)", value=date.today())
+start_balance = st.sidebar.number_input("Starting Balance (₹)", min_value=0.0, value=0.0, step=1000.0, format="%.2f")
+extra_cash = st.sidebar.number_input("Extra Cash (₹)", min_value=0.0, value=0.0, step=1000.0, format="%.2f")
+st.sidebar.caption("These inputs are used in cash-flow calculations/notes.")
 
-# ---------------- Sidebar controls ----------------
-st.sidebar.header("⚙️ Settings")
-today = st.sidebar.date_input("Reference month (any date in the month)", value=date.today())
-start_balance_sb = st.sidebar.number_input(
-    "Starting balance for month (₹)", min_value=0.0, step=0.01, value=0.00, format="%.2f"
-)
-extra_buffer_sb  = st.sidebar.number_input(
-    "Extra buffer (₹)", min_value=0.0, step=0.01, value=50000.00, format="%.2f"
-)
+# Load persisted data from JSON
+card_aliases = load_card_aliases()
+cards = load_cards()
+debts = load_debts()
+regulars = load_regulars()
+paid_flags = load_paid_flags()
 
-st.sidebar.markdown("---")
-st.sidebar.header("💼 Income")
-salary_amount = st.sidebar.number_input(
-    "Monthly Salary (₹)", min_value=0.0, step=0.01, value=0.00, format="%.2f"
-)
-salary_payday = st.sidebar.number_input("Salary Payday (1–31)", min_value=1, max_value=31, value=1)
+# CSV upload & Card Mapping UI
+st.markdown("## 🧾 CSV Upload & Card Mapping")
+df = csv_and_mapping_section(card_aliases)
+if df is not None and not df.empty:
+    st.success(f"Transactions loaded: {len(df):,}")
+    with st.expander("Preview normalized transactions (first 200 rows)", expanded=False):
+        st.dataframe(df.head(200), use_container_width=True, hide_index=True)
 
-# Persist extra inflows in session
-if "extra_inflows" not in st.session_state:
-    st.session_state.extra_inflows = [{"Date": date.today(), "Source": "Bonus/Other", "Amount": 0.00}]
+# Card mapping diagnostics
+st.markdown("---")
+st.markdown("## 🔍 Detector diagnostics (Card mapping)")
+diagnostics_section(df, card_aliases)
 
-with st.sidebar.expander("➕ Extra inflows (dated)", expanded=False):
-    df_extra = pd.DataFrame(st.session_state.extra_inflows)
-    if "Date" in df_extra:
-        df_extra["Date"] = pd.to_datetime(df_extra["Date"], errors="coerce").dt.date
-    edited = st.data_editor(
-        df_extra,
-        num_rows="dynamic",
-        use_container_width=True,
-    )
-    st.session_state.extra_inflows = [
-        {
-            "Date": (r["Date"] if isinstance(r["Date"], date) else (pd.to_datetime(r["Date"]).date() if pd.notna(r["Date"]) else None)),
-            "Source": str(r.get("Source", "") or ""),
-            "Amount": round(float(r.get("Amount", 0) or 0), 2),
-        }
-        for _, r in edited.iterrows()
-        if r.get("Date") is not None
-    ]
+# Quick cash inputs summary
+st.markdown("#### Quick Cash Inputs")
+c1, c2 = st.columns(2)
+with c1:
+    sb = st.number_input("Start balance (₹)", min_value=0.0, value=start_balance,
+                         step=1000.0, format="%.2f", key="q_start_balance")
+with c2:
+    ec = st.number_input("Extra cash (₹)", min_value=0.0, value=extra_cash,
+                         step=1000.0, format="%.2f", key="q_extra_cash")
+st.caption(f"Net buffer this month: **₹{sb + ec:,.2f}**")
 
-# ---------------- Upload ----------------
-uploaded = st.file_uploader("Upload your transactions CSV", type=["csv"])
-if not uploaded:
-    st.info("Upload your transactions CSV to begin.")
-    st.stop()
+# Cards CRUD section
+st.markdown("---")
+st.markdown("## 💳 Credit Cards — Manage Cycles")
+cards_updated = cards_crud_section(cards)
+if cards_updated is not None:
+    save_cards(cards_updated)
+    cards = cards_updated
+    st.success("Cards saved.")
 
-# ---------------- Load & normalize ----------------
-df_raw = load_csv(uploaded)                 # rounds Amount to 2 decimals
-df_raw = normalize_columns(df_raw)          # fixes header variants (Payment mode, etc.)
+# Bills (Generating vs Due) section
+st.markdown("---")
+st.markdown("## 🧾 Bills (Generating vs Due) — offset-aware")
+bills_section(df, cards, ref_date)
 
-# Validate required columns after normalization
-ok, missing_cols = validate_dataframe(df_raw)
-if not ok:
-    st.error(f"CSV missing required columns (after normalization): {missing_cols}")
-    st.stop()
+# Debts CRUD section
+st.markdown("---")
+st.markdown("## 🏦 Long-Term Debt & EMI — Manage")
+debts_updated = debts_crud_section(debts)
+if debts_updated is not None:
+    save_debts(debts_updated)
+    st.success("Debts saved.")
 
-# Derived DF
-df = df_raw.copy()
-df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-df = df[df["Date"].notna()].copy()
-df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0).round(2)
-df["type"] = df["type"].fillna("").astype(str)
+# Regular expenses CRUD + Paid toggles section
+st.markdown("---")
+st.markdown("## 🗓 Regular Expenses (incl. SIPs & Rent) — Manage & Mark Paid")
+regs_updated, paid_flags_updated = regulars_crud_section(regulars, paid_flags, ref_date)
+if regs_updated is not None:
+    save_regulars(regs_updated)
+    st.success("Regular expenses saved.")
+if paid_flags_updated is not None:
+    save_paid_flags(paid_flags_updated)
+    st.success("Paid flags saved.")
 
-# Session state holders
-for key, default in [
-    ("auto_overrides", {}),
-    ("new_card_cycles", {}),
-    ("cycle_overrides", {}),
-    ("card_date_overrides", {}),
-    ("paid_flags", {}),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-# Manual JSON overrides (sidebar)
-st.sidebar.markdown("---")
-st.sidebar.header("🔧 Card Detection Overrides (JSON)")
-ov_json = st.sidebar.text_area("e.g. {\"3. May Amex\": \"Amex\"}", value="{}")
-try:
-    user_overrides = json.loads(ov_json or "{}")
-    if not isinstance(user_overrides, dict):
-        user_overrides = {}
-except Exception:
-    user_overrides = {}
-    st.sidebar.warning("Invalid JSON; overrides ignored.")
-
-# Card detection
-df["Card"] = df["Payment mode"].apply(lambda x: detect_card(x, user_overrides))
-
-# Active BILL_CYCLES (merge defaults + newly added cards)
-BILL_CYCLES = get_active_cycles(DEFAULT_BILL_CYCLES)
-
-# ---------------- UI sections ----------------
-diagnostics_section(df, BILL_CYCLES)
-
-start_balance_effective, extra_buffer_effective = start_balance_override_section(
-    start_balance_sb, extra_buffer_sb
-)
-
-debt_summary_section(DEBTS)
-
-# Bills — month local to this section
-bills_anchor, by_y, by_m = per_card_dates_editor_section(BILL_CYCLES, today)
-
-# Two-tab bills
-card_gen_df, card_due_df = bills_tabs_section(df, BILL_CYCLES, bills_anchor, by_y, by_m)
-
-# Quick selector based on bills anchor
-quick_due_selector_section(df, BILL_CYCLES, bills_anchor)
-
-# Regular expenses (+ paid toggles) for sidebar month
-cash_out_df = regulars_section(today, DEBTS, REGULARS)
-
-# Cash flow simulator (uses income, overrides)
-cashflow_section(
-    df=df,
-    BILL_CYCLES=BILL_CYCLES,
-    today=today,
-    salary_amount=salary_amount,
-    salary_payday=salary_payday,
-    cash_out_df=cash_out_df,
-    start_balance=start_balance_effective,
-    extra_buffer=extra_buffer_effective,
-)
-
-# Expenses by card (generating in sidebar month)
-expenses_by_card_section(df, BILL_CYCLES, today)
-
-# Top merchants
-merchants_section(df, BILL_CYCLES, today)
-
-# Trends
-monthly = compute_monthly_for_trends(df)  # already rounded to 2 decimals
-trends_section(monthly, BILL_CYCLES, today)
-
-# 1-year plan
-plan_section(DEBTS, REGULARS)
+st.markdown("---")
+st.caption("All data persist in `data/*.json`. You can edit JSON directly if needed.")

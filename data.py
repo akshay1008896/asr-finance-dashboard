@@ -1,30 +1,49 @@
-# data.py
-import pandas as pd
-import streamlit as st
+import json
+from typing import Any, Dict, List
+from config import (
+    CARDS_FILE, DEBTS_FILE, REGULARS_FILE, PAID_FLAGS_FILE, CARD_ALIASES_FILE,
+    DEFAULT_CARDS, DEFAULT_DEBTS, DEFAULT_REGULARS, DEFAULT_PAID_FLAGS, DEFAULT_CARD_ALIASES
+)
 
-REQUIRED_COLS = {"Date", "Amount", "Payment mode", "type"}
+def _read_json(path, default):
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return json.loads(json.dumps(default))
 
-@st.cache_data(show_spinner=False)
-def load_csv(uploaded) -> pd.DataFrame:
-    df = pd.read_csv(uploaded)
-    if "Amount" in df.columns:
-        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0).round(2)
-    return df
+def _write_json(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
 
-def validate_dataframe(df: pd.DataFrame):
-    missing = REQUIRED_COLS.difference(df.columns)
-    return (len(missing) == 0, missing)
+def load_cards() -> List[Dict[str, Any]]:
+    return _read_json(CARDS_FILE, DEFAULT_CARDS)
 
-@st.cache_data(show_spinner=False)
-def compute_monthly_for_trends(df: pd.DataFrame) -> pd.DataFrame:
-    tmp = df.copy()
-    tmp = tmp.loc[tmp["type"].str.lower().eq("expense")].copy()
-    tmp["YYYY-MM"] = tmp["Date"].dt.to_period("M").astype(str)
-    tmp = tmp.loc[tmp["Card"].notna()].copy()
-    g = (
-        tmp.groupby(["YYYY-MM", "Card"])["Amount"]
-        .sum()
-        .unstack(fill_value=0.0)
-        .sort_index()
-    )
-    return g.round(2)
+def save_cards(items: List[Dict[str, Any]]) -> None:
+    _write_json(CARDS_FILE, items)
+
+def load_debts() -> List[Dict[str, Any]]:
+    return _read_json(DEBTS_FILE, DEFAULT_DEBTS)
+
+def save_debts(items: List[Dict[str, Any]]) -> None:
+    _write_json(DEBTS_FILE, items)
+
+def load_regulars() -> List[Dict[str, Any]]:
+    return _read_json(REGULARS_FILE, DEFAULT_REGULARS)
+
+def save_regulars(items: List[Dict[str, Any]]) -> None:
+    _write_json(REGULARS_FILE, items)
+
+def load_paid_flags() -> Dict[str, bool]:
+    return _read_json(PAID_FLAGS_FILE, DEFAULT_PAID_FLAGS)
+
+def save_paid_flags(flags: Dict[str, bool]) -> None:
+    _write_json(PAID_FLAGS_FILE, flags)
+
+def load_card_aliases() -> Dict[str, str]:
+    return _read_json(CARD_ALIASES_FILE, DEFAULT_CARD_ALIASES)
+
+def save_card_aliases(aliases: Dict[str, str]) -> None:
+    _write_json(CARD_ALIASES_FILE, aliases)

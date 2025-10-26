@@ -1,0 +1,50 @@
+[
+  {
+    "id": "f2ee4726-6231-413d-988f-2ae082830cf6",
+    "name": "Amex",
+    "start_day": 26,
+    "end_day": 25,
+    "due_day": 12,
+    "due_offset": 1
+  },
+  {
+    "id": "dd8a0c32-abe8-4a9b-b7e1-de294fcdd763",
+    "name": "HSBC Cashback",
+    "start_day": 8,
+    "end_day": 7,
+    "due_day": 22,
+    "due_offset": 1
+  },
+  {
+    "id": "75c9c206-d65e-4a00-97f8-b8826fc34364",
+    "name": "ICICI",
+    "start_day": 22,
+    "end_day": 21,
+    "due_day": 8,
+    "due_offset": 1
+  },
+  {
+    "id": "cc29cd44-5acc-4fa9-9d2e-0ba3b58b87ae",
+    "name": "One",
+    "start_day": 19,
+    "end_day": 18,
+    "due_day": 5,
+    "due_offset": 1
+  },
+  {
+    "id": "e6616fdf-18f2-427b-a283-387a51091d22",
+    "name": "SBI",
+    "start_day": 25,
+    "end_day": 24,
+    "due_day": 13,
+    "due_offset": 1
+  },
+  {
+    "id": "af49cf7f-7250-4fe1-96d0-307b6434a42c",
+    "name": "HSBC",
+    "start_day": 19,
+    "end_day": 18,
+    "due_day": 5,
+    "due_offset": 1
+  }
+]
