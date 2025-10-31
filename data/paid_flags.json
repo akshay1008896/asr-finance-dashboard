@@ -1,7 +1,15 @@
 {
   "CASH::House Rent::2025-10": false,
-  "CASH::Papa::2025-10": false,
+  "CASH::Papa::2025-10": true,
   "CASH::SIP – 3rd::2025-10": false,
   "CASH::SIP – 9th::2025-10": false,
-  "CASH::SIP – 11th::2025-10": false
+  "CASH::SIP – 11th::2025-10": false,
+  "CASH::Mover and packers::2025-10": false,
+  "CASH::CC and ITR::2025-10": true,
+  "CC::Amex::2025-10": false,
+  "CC::HSBC Cashback::2025-10": false,
+  "CC::ICICI::2025-10": false,
+  "CC::SBI::2025-10": false,
+  "CC::HSBC::2025-10": false,
+  "CASH::Cred Extra::2025-10": true
 }

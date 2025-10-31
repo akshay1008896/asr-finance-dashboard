@@ -1,0 +1,12 @@
+[
+  {
+    "id": "uuid-overrides-row",
+    "card_id": "uuid-of-card",
+    "year": 2025,
+    "month": 10,
+    "cycle_start": "2025-09-22",
+    "cycle_end": "2025-10-21",
+    "due_date": "2025-11-08"
+  },
+  …
+]

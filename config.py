@@ -1,17 +1,22 @@
+# config.py
+# Paths & empty defaults (no sample data)
+
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
 
 CARDS_FILE = DATA_DIR / "cards.json"
 DEBTS_FILE = DATA_DIR / "debts.json"
 REGULARS_FILE = DATA_DIR / "regulars.json"
 PAID_FLAGS_FILE = DATA_DIR / "paid_flags.json"
 CARD_ALIASES_FILE = DATA_DIR / "card_aliases.json"
+OVERRIDES_FILE = DATA_DIR / "card_overrides.json"
 
-DEFAULT_CARDS = []
-DEFAULT_DEBTS = []
-DEFAULT_REGULARS = []
-DEFAULT_PAID_FLAGS = {}
-DEFAULT_CARD_ALIASES = {}
+# Empty defaults — CSV is primary data
+EMPTY_CARDS = []
+EMPTY_DEBTS = []
+EMPTY_REGULARS = []
+EMPTY_PAID_FLAGS = {}
+EMPTY_CARD_ALIASES = {}
+EMPTY_OVERRIDES = []

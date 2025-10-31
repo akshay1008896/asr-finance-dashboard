@@ -28,5 +28,26 @@
     "item": "SIP – 11th",
     "amount": 500.0,
     "date_hint": "11"
+  },
+  {
+    "id": "ec239acb-1731-43d7-baf9-cc3de02896a6",
+    "item": "Mover and packers",
+    "amount": 23567.0,
+    "date_hint": "5",
+    "extra": {}
+  },
+  {
+    "id": "ec1dfe97-830f-4ab8-b1f6-b11d15fa2010",
+    "item": "CC and ITR",
+    "amount": 18273.0,
+    "date_hint": "5",
+    "extra": {}
+  },
+  {
+    "id": "46b224f9-4837-4422-bfef-6589a9a7da56",
+    "item": "Cred Extra",
+    "amount": 17657.0,
+    "date_hint": "5",
+    "extra": {}
   }
 ]
