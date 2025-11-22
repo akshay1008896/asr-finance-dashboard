@@ -6,7 +6,7 @@ from datetime import date
 import streamlit as st
 import pandas as pd
 
-from data import (
+from persistence import (
     load_cards, save_cards,
     load_debts, save_debts,
     load_regulars, save_regulars,
@@ -14,7 +14,7 @@ from data import (
     load_card_aliases, save_card_aliases,
     load_overrides, save_overrides,
 )
-from ui_sections import (
+from ui import (
     csv_and_mapping_section,
     diagnostics_section,
     cards_crud_section,
@@ -110,3 +110,4 @@ trends_section(df)
 
 st.markdown("---")
 st.caption("Data is stored locally under ./data/*.json. CSV is your primary transaction source.")
+

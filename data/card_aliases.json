@@ -3,7 +3,8 @@
   "2.FEB ICI ₹3500 (6L)": "ICICI",
   "3. MAY Amex Plat ₹5K": "Amex",
   "4. JUN HSBCL ₹1K(2L)": "HSBC Cashback",
-  "5. OnceCard BOB": "One",
+  "5. HSBC": "HSBC Rupay",
+  "6. OnceCard BOB": "One",
   "Amex\tS 500 - Closed": "Amex Smart",
   "Axis ₹5k - Closed": "Axis",
   "Cash": "Cash",
@@ -16,5 +17,6 @@
   "Regular Expenses": "Regular",
   "Slice - Closed": "Slice",
   "Wedding": "Wedding",
-  "Your Bank": "Bank"
+  "Your Bank": "Bank",
+  "5. OnceCard BOB": "One"
 }

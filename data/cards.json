@@ -42,8 +42,8 @@
   {
     "id": "af49cf7f-7250-4fe1-96d0-307b6434a42c",
     "name": "HSBC",
-    "start_day": 19,
-    "end_day": 18,
+    "start_day": 17,
+    "end_day": 16,
     "due_day": 5,
     "due_offset": 1
   }
